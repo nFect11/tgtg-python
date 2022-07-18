@@ -1,15 +1,13 @@
 style:
-	python3 -m poetry run black .
-	python3 -m poetry run isort .
-	python3 -m poetry run flake8
+	poetry run black .
+	poetry run isort .
+	poetry run flake8
 
 test:
-	python3 -m poetry run pytest
+	poetry run pytest
 
 lint:
-	python3 -m poetry run black . --check
-	python3 -m poetry run isort . --check
-	python3 -m poetry run flake8
+	poetry run pre-commit run -a
 
 publish:
-	python3 -m poetry publish --build
+	poetry publish --build
