@@ -18,6 +18,7 @@ Handle:
 - set favorite (`/api/item/:id/setFavorite`)
 - get active orders (`/api/order/vX/active`)
 - get inactive orders (`/api/order/vX/inactive`)
+- create a semi-automatic buy order (`/api/order/vX/create/`)
 
 ## Install
 
@@ -409,6 +410,18 @@ client.set_favorite(item_id=64346, is_favorite=True)
 
 # remove favorite
 client.set_favorite(item_id=64346, is_favorite=False)
+```
+
+### Send a buy order
+
+_(Current version only works with Germany's Klarna debit paymeny system. PayPal is WIP)_
+
+```python
+# returns a buy url you'll have to open and pay manually
+# bags are reserved for 10 minutes after which your order is going to get canceled
+# tries to buy the requested amount of bags, if less are available, current stock is bought
+buy_url = client.order_item(item_id=12345, requested_bags=3)
+
 ```
 
 ### Create an account
