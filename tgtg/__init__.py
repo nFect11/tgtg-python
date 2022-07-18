@@ -3,23 +3,31 @@ import random
 import time
 from http import HTTPStatus
 from urllib.parse import urljoin
+import json
+import asyncio
 
 import requests
+from tomlkit import item
 
 from .exceptions import TgtgAPIError, TgtgLoginError, TgtgPollingError
 
 BASE_URL = "https://apptoogoodtogo.com/api/"
 API_ITEM_ENDPOINT = "item/v7/"
+API_ORDER_CREATE = "order/v6/create/"
+API_ORDER = "order/v6/"
+API_PAYMENT = "payment/v3/"
 AUTH_BY_EMAIL_ENDPOINT = "auth/v3/authByEmail"
 AUTH_POLLING_ENDPOINT = "auth/v3/authByRequestPollingId"
 SIGNUP_BY_EMAIL_ENDPOINT = "auth/v3/signUpByEmail"
 REFRESH_ENDPOINT = "auth/v3/token/refresh"
 ACTIVE_ORDER_ENDPOINT = "order/v6/active"
 INACTIVE_ORDER_ENDPOINT = "order/v6/inactive"
+HIDDEN_STORE = "hiddenstore/v2/unlock"
 USER_AGENTS = [
-    "TGTG/21.12.1 Dalvik/2.1.0 (Linux; U; Android 6.0.1; Nexus 5 Build/M4B30Z)",
-    "TGTG/21.12.1 Dalvik/2.1.0 (Linux; U; Android 7.0; SM-G935F Build/NRD90M)",
-    "TGTG/21.12.1 Dalvik/2.1.0 (Linux; Android 6.0.1; SM-G920V Build/MMB29K)",
+    #"TGTG/21.12.1 Dalvik/2.1.0 (Linux; U; Android 6.0.1; Nexus 5 Build/M4B30Z)",
+    #"TGTG/21.12.1 Dalvik/2.1.0 (Linux; U; Android 7.0; SM-G935F Build/NRD90M)",
+    #"TGTG/21.12.1 Dalvik/2.1.0 (Linux; Android 6.0.1; SM-G920V Build/MMB29K)",
+    "TGTG/22.2.1 Dalvik/2.1.0 (Linux; U; Android 9; SM-G955F Build/PPR1.180610.011)"
 ]
 DEFAULT_ACCESS_TOKEN_LIFETIME = 3600 * 4  # 4 hours
 MAX_POLLING_TRIES = 24  # 24 * POLLING_WAIT_TIME = 2 minutes
@@ -327,3 +335,92 @@ class TgtgClient:
             return response.json()
         else:
             raise TgtgAPIError(response.status_code, response.content)
+    
+    def order_item(self, item_id, requested_bags = 1):
+
+        self.login()
+        print("Checking stock...")
+        checkStock = self.get_item(item_id)
+        checkStock = checkStock["items_available"]
+        if(checkStock == 0):
+            return
+        elif(checkStock > 0):
+            print(f"Stock at: {checkStock} items")
+            print("Sending buy order...")
+            if(checkStock < requested_bags):
+                requested_bags = checkStock
+            response = self.session.post(
+                urljoin(self._get_url(API_ORDER_CREATE), str(item_id)),
+                headers=self._headers,
+                json={"item_count": requested_bags},
+                proxies=self.proxies,
+                timeout=self.timeout,
+        )
+        if response.status_code == HTTPStatus.OK:
+            order_resp = response.json()
+            print(f"Buy Order: {order_resp['state']}\nOrder-ID: {order_resp['order']['id']}\nState: {order_resp['order']['state']}")
+            if(order_resp["state"] == "SUCCESS" and order_resp["order"]["state"] == "RESERVED"):
+                order_id = order_resp["order"]["id"]
+                print("Initiating bank transfer...")
+                return self.order_bank_transfer(order_id)
+            return
+        else:
+            raise TgtgAPIError(response.status_code, response.content)
+
+    def order_bank_transfer(self, order_id):
+        order_status = self.session.post(
+            urljoin(self._get_url(API_ORDER), f"{order_id}/status"),
+            headers=self._headers,
+            proxies=self.proxies,
+            timeout=self.timeout,
+        )
+        if(order_status.status_code == HTTPStatus.OK):
+            order_status = order_status.json()
+            print(f"Order Status: {order_status}")
+            if order_status["state"] == "RESERVED":       
+                bank_json = {"authorization":
+                                {"authorization_payload":
+                                    {"save_payment_method":False,
+                                    "payment_type":"SOFORT",
+                                    "type":"adyenAuthorizationPayload",
+                                    "payload":"{\"name\":\"Online bank transfer.\",\"type\":\"directEbanking\"}"},
+                                "payment_provider":"ADYEN",
+                                "return_url":"adyencheckout://com.app.tgtg.itemview"}
+                            }
+                payment_id = self.session.post(
+                    urljoin(self._get_url(API_ORDER), f"{order_id}/pay"),
+                    headers=self._headers,
+                    json=bank_json,
+                    proxies=self.proxies,
+                    timeout=self.timeout,
+                )
+                print(f"Bank Response: {payment_id}")
+                if(payment_id.status_code == HTTPStatus.OK):
+                    payment_id = payment_id.json()
+                    payment_id = payment_id["payment_id"]
+                    return self.pay_bank(payment_id)
+
+                else:
+                    raise TgtgAPIError(payment_id.status_code, payment_id.content)
+        else:
+            raise TgtgAPIError(order_status.status_code, order_status.content)
+    def pay_bank(self, payment_id):
+        time.sleep(6)
+        print(f"Payment ID: {payment_id}")
+        #while not payment_response:
+        payment_response = self.session.post(
+                urljoin(self._get_url(API_PAYMENT), str(payment_id)),
+                headers=self._headers,
+                proxies=self.proxies,
+                timeout=self.timeout,
+            )
+        payment_response = payment_response.json()
+        print(f"Payment reponse: {payment_response}")
+        if(payment_response["state"] == "ADDITIONAL_AUTHORIZATION_REQUIRED"):
+            payload = json.loads(payment_response["payload"])
+            payload_url = payload["url"]
+            print(payload_url)
+            return payload_url
+        return "No Payment URL available"
+            
+        
