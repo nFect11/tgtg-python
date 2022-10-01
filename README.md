@@ -414,13 +414,14 @@ client.set_favorite(item_id=64346, is_favorite=False)
 
 ### Send a buy order
 
-_(Current version only works with Germany's Klarna debit paymeny system. PayPal is WIP)_
+_(Only works with Klarna for now. Reserves bags and creates payment url for manual payment using a debit card)_
 
 ```python
 # returns a buy url you'll have to open and pay manually
-# bags are reserved for 10 minutes after which your order is going to get canceled
+# bags are reserved for 10 minutes after which your order is going to get cancelled
 # tries to buy the requested amount of bags, if less are available, current stock is bought
 buy_url = client.order_item(item_id=12345, requested_bags=3)
+webbrowser.get(browser_path).open(buy_url)
 
 ```
 
