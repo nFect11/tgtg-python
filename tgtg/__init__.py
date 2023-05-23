@@ -25,6 +25,10 @@ SIGNUP_BY_EMAIL_ENDPOINT = "auth/v3/signUpByEmail"
 REFRESH_ENDPOINT = "auth/v3/token/refresh"
 ACTIVE_ORDER_ENDPOINT = "order/v6/active"
 INACTIVE_ORDER_ENDPOINT = "order/v6/inactive"
+CREATE_ORDER_ENDPOINT = "order/v7/create/"
+ABORT_ORDER_ENDPOINT = "order/v7/{}/abort"
+ORDER_STATUS_ENDPOINT = "order/v7/{}/status"
+API_BUCKET_ENDPOINT = "discover/v1/bucket"
 DEFAULT_APK_VERSION = "22.5.5"
 USER_AGENTS = [
     "TGTG/{} Dalvik/2.1.0 (Linux; U; Android 9; Nexus 5 Build/M4B30Z)",
@@ -48,10 +52,11 @@ class TgtgClient:
         language="en-UK",
         proxies=None,
         timeout=None,
+        last_time_token_refreshed=None,
         access_token_lifetime=DEFAULT_ACCESS_TOKEN_LIFETIME,
         device_type="ANDROID",
+        cookie=None,
     ):
-
         self.base_url = url
 
         self.email = email
@@ -59,8 +64,9 @@ class TgtgClient:
         self.access_token = access_token
         self.refresh_token = refresh_token
         self.user_id = user_id
+        self.cookie = cookie
 
-        self.last_time_token_refreshed = None
+        self.last_time_token_refreshed = last_time_token_refreshed
         self.access_token_lifetime = access_token_lifetime
 
         self.device_type = device_type
@@ -92,15 +98,20 @@ class TgtgClient:
             "access_token": self.access_token,
             "refresh_token": self.refresh_token,
             "user_id": self.user_id,
+            "cookie": self.cookie,
         }
 
     @property
     def _headers(self):
         headers = {
-            "user-agent": self.user_agent,
-            "accept-language": self.language,
+            "accept": "application/json",
             "Accept-Encoding": "gzip",
+            "accept-language": self.language,
+            "content-type": "application/json; charset=utf-8",
+            "user-agent": self.user_agent,
         }
+        if self.cookie:
+            headers["Cookie"] = self.cookie
         if self.access_token:
             headers["authorization"] = f"Bearer {self.access_token}"
         return headers
@@ -128,15 +139,20 @@ class TgtgClient:
             self.access_token = response.json()["access_token"]
             self.refresh_token = response.json()["refresh_token"]
             self.last_time_token_refreshed = datetime.datetime.now()
+            self.cookie = response.headers["Set-Cookie"]
         else:
             raise TgtgAPIError(response.status_code, response.content)
 
     def login(self):
         if not (
-            self.email or self.access_token and self.refresh_token and self.user_id
+            self.email
+            or self.access_token
+            and self.refresh_token
+            and self.user_id
+            and self.cookie
         ):
             raise TypeError(
-                "You must provide at least email or access_token, refresh_token and user_id"
+                "You must provide at least email or access_token, refresh_token, user_id and cookie"
             )
         if self._already_logged:
             self._refresh_token()
@@ -197,6 +213,7 @@ class TgtgClient:
                 self.refresh_token = login_response["refresh_token"]
                 self.last_time_token_refreshed = datetime.datetime.now()
                 self.user_id = login_response["startup_data"]["user"]["user_id"]
+                self.cookie = response.headers["Set-Cookie"]
                 return
             else:
                 if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
@@ -275,6 +292,36 @@ class TgtgClient:
         else:
             raise TgtgAPIError(response.status_code, response.content)
 
+    def get_favorites(
+        self,
+        latitude=0.0,
+        longitude=0.0,
+        radius=21,
+        page_size=50,
+        page=0,
+    ):
+        self.login()
+
+        # fields are sorted like in the app
+        data = {
+            "origin": {"latitude": latitude, "longitude": longitude},
+            "radius": radius,
+            "user_id": self.user_id,
+            "paging": {"page": page, "size": page_size},
+            "bucket": {"filler_type": "Favorites"},
+        }
+        response = self.session.post(
+            self._get_url(API_BUCKET_ENDPOINT),
+            headers=self._headers,
+            json=data,
+            proxies=self.proxies,
+            timeout=self.timeout,
+        )
+        if response.status_code == HTTPStatus.OK:
+            return response.json()["mobile_bucket"]["items"]
+        else:
+            raise TgtgAPIError(response.status_code, response.content)
+
     def set_favorite(self, item_id, is_favorite):
         self.login()
         response = self.session.post(
@@ -286,6 +333,55 @@ class TgtgClient:
         )
         if response.status_code != HTTPStatus.OK:
             raise TgtgAPIError(response.status_code, response.content)
+
+    def create_order(self, item_id, item_count):
+        self.login()
+
+        response = self.session.post(
+            urljoin(self._get_url(CREATE_ORDER_ENDPOINT), str(item_id)),
+            headers=self._headers,
+            json={"item_count": item_count},
+            proxies=self.proxies,
+            timeout=self.timeout,
+        )
+        if response.status_code != HTTPStatus.OK:
+            raise TgtgAPIError(response.status_code, response.content)
+        elif response.json()["state"] != "SUCCESS":
+            raise TgtgAPIError(response.json()["state"], response.content)
+        else:
+            return response.json()["order"]
+
+    def get_order_status(self, order_id):
+        self.login()
+
+        response = self.session.post(
+            self._get_url(ORDER_STATUS_ENDPOINT.format(order_id)),
+            headers=self._headers,
+            proxies=self.proxies,
+            timeout=self.timeout,
+        )
+        if response.status_code == HTTPStatus.OK:
+            return response.json()
+        else:
+            raise TgtgAPIError(response.status_code, response.content)
+
+    def abort_order(self, order_id):
+        """Use this when your order is not yet paid"""
+        self.login()
+
+        response = self.session.post(
+            self._get_url(ABORT_ORDER_ENDPOINT.format(order_id)),
+            headers=self._headers,
+            json={"cancel_reason_id": 1},
+            proxies=self.proxies,
+            timeout=self.timeout,
+        )
+        if response.status_code != HTTPStatus.OK:
+            raise TgtgAPIError(response.status_code, response.content)
+        elif response.json()["state"] != "SUCCESS":
+            raise TgtgAPIError(response.json()["state"], response.content)
+        else:
+            return
 
     def signup_by_email(
         self,
